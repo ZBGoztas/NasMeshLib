@@ -1,6 +1,6 @@
 from utils.logger_utils import get_context_logger,get_logger
 from utils.config_utils import load_config
-from utils.parser_utils import ParserNas 
+from utils.ParserNas import ParserNas 
 from utils.topology_extractor import TopologyExtractor
 from utils.geometry_features import GeometryFeatures
 from utils.mesh_summary import MeshSummary

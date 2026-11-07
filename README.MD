@@ -1,111 +1,105 @@
-# NasMeshLib - Mesh Analysis and Processing Library
+# NasMeshLib
 
-**NasMeshLib** is a comprehensive Python library designed to process NASTRAN (`.nas`) mesh files, analyze their topological and geometric properties, and standardize the data (Canonical Order) for machine learning models or advanced simulations.
+Turns NASTRAN (`.nas`) surface meshes into machine-learning-ready graph data: nodes, edges and elements with geometric and topological features, in a canonical order so the same mesh always produces the same sequence.
 
-Developed as a core component of the MeshCrafter suite, this tool processes both raw and refined mesh data, exporting detailed features into structured CSV and JSON formats.
+It is the preprocessing stage of **MeshCrafter**, a generative model that learns to produce refined FE meshes from raw ones. For each part, a raw mesh and a refined mesh (same file name, two folders) are processed into paired CSV datasets.
 
-## 🚀 Features
+## What it computes
 
-*   **NASTRAN Parser:** Robustly reads `.nas` files (supporting GRID, CTRIA3, CQUAD4 cards) and fixes malformed scientific notation.
-*   **Topological Analysis:**
-    *   Edge extraction and length calculation.
-    *   Element adjacency (neighbor) determination.
-    *   Element-Edge and Edge-Element graphical mapping.
-*   **Geometric Features:**
-    *   Node and Element normal vector calculation.
-    *   Mean Curvature and Gaussian Curvature estimation.
-    *   Automatic boundary node detection.
-*   **Canonical Ordering:**
-    *   Spatial sorting of nodes (Z -> Y -> X).
-    *   Topological re-indexing of elements using Breadth-First Search (BFS) to ensure data consistency.
-*   **Visualization:** 3D rendering of meshes, boundary points, and node indices using PyVista.
-*   **Data Export:** Saves all calculated features into structured CSV files and summary statistics into JSON.
+| Level | Features |
+| --- | --- |
+| Node | coordinates, area-weighted normal, **mean curvature**, **Gaussian curvature**, degree, boundary flag |
+| Edge | node pair, length |
+| Element | node list (CTRIA3 / CQUAD4), area, normal |
+| Graph | element adjacency, element ↔ edge maps, edge-to-id map |
+| Mesh | bounding box, surface area, mean edge length, counts (JSON summary) |
 
-## 📂 Project Structure
+**Canonical ordering.** Nodes are sorted spatially (Z → Y → X); elements are re-indexed by breadth-first traversal of the element adjacency graph. This removes the arbitrary IDs a mesher assigns, which matters for sequence models that generate elements one at a time.
 
-```text
-root/
-├── main.py                          # Main execution pipeline
-├── scripts/                         # Visualization tools
-│   ├── visualize_boundary_nodes.py  # Highlights boundary nodes
-│   └── visualize_first_10_nodes.py  # Highlights specific node indices
-├── utils/                           # Core library modules
-│   ├── canonical_order.py           # Re-indexing algorithms
-│   ├── config_utils.py              # Configuration loading
-│   ├── csv_utils.py                 # CSV/JSON export handlers
-│   ├── geometry_features.py         # Curvature and normal logic
-│   ├── helper_utils.py              # Data unification helpers
-│   ├── logger_utils.py              # Logging setup
-│   ├── mesh_summary.py              # Bounding box & stats
-│   ├── ParserNas.py                 # .nas file parser
-│   ├── pyvista_compat.py            # PyVista compatibility layer
-│   ├── topology_extractor.py        # Edge & adjacency logic
-│   └── config/
-│       └── Config.yaml              # Configuration settings
-```
+**Curvature.** Discrete differential geometry on the triangulated surface (quads split into two triangles):
 
-## 🛠️ Installation
+- Mean curvature: cotangent Laplace–Beltrami operator, `H = -½ ⟨Δx, n⟩`, signed with respect to the vertex normal.
+- Gaussian curvature: angle deficit (`2π − Σθ`, `π` on boundary nodes) divided by the barycentric vertex area.
 
-Install the required Python dependencies:
+## Validation
+
+`tests/test_curvature.py` checks the parser, topology and curvature against shapes with known answers:
+
+| Shape | Mesh | Mean curvature H | Gaussian curvature K |
+| --- | --- | --- | --- |
+| Sphere, R = 10 | 3,000 nodes, triangles | 0.0999 (exact: 0.1) | 0.0100 (exact: 0.01) |
+| Cylinder, R = 5 | 2,400 nodes, quads | 0.1000 (exact: 0.1) | 0.0000 (exact: 0) |
+| Plane | triangles | 0 | 0 |
+
+The topology test also checks Euler's relation for a closed triangle mesh (E = 3F/2).
+
+> **Note:** versions before this one computed Gaussian curvature from an unordered neighbour set without dividing by area, and halved the mean curvature. The tests above were added with the fix; features generated with older versions should be regenerated.
+
+## Installation
 
 ```bash
-pip install numpy pyvista pyyaml scipy
+pip install numpy scipy pyyaml pyvista pytest
 ```
 
-## ⚙️ Configuration
+PyVista is only needed for boundary detection inside `find_boundary_nodes` and for the visualization scripts.
 
-Before running the pipeline, you must configure your input and output directories in the configuration file.
+## Usage
 
-Open [utils/config/Config.yaml](utils/config/Config.yaml) and edit the paths according to your system:
+1. Put raw meshes in one folder and refined meshes with the **same file names** in another.
+2. Set the folders in [`utils/config/Config.yaml`](utils/config/Config.yaml) (or point `NASMESHLIB_CONFIG` to your own YAML):
 
-```yaml
-raw_input_dir: "path/to/raw_input"       # Directory containing .nas files
-rafined_input_dir: "path/to/refined"     # Secondary input directory (optional)
-raw_output_csv_dir: "path/to/output_raw" # Output for raw data CSVs
-rafined_output_csv_dir: "path/to/output_refined" # Output for processed CSVs
-summary_dir: "path/to/summary"           # Output for JSON summaries
-logs_dir: "logs"
-```
+   ```yaml
+   raw_input_dir: "data/raw"
+   rafined_input_dir: "data/refined"
+   raw_output_csv_dir: "output/raw"
+   rafined_output_csv_dir: "output/refined"
+   summary_dir: "output/summary"
+   logs_dir: "logs"
+   ```
 
-## ▶️ Usage
+3. Run the pipeline and the tests:
 
-### 1. Data Processing Pipeline
+   ```bash
+   python main.py
+   python -m pytest tests
+   ```
 
-Run `main.py` to execute the full analysis pipeline. This script reads `.nas` files from the input directory, analyzes properties, applies canonical ordering, and saves the results.
+Visualization:
 
 ```bash
-python main.py
+python scripts/visualize_boundary_nodes.py path/to/mesh.nas
+python scripts/visualize_first_10_nodes.py path/to/mesh.nas
 ```
 
-### 2. Visualization Tools
+## Output
 
-You can visual inspection tools located in the `scripts/` folder.
-
-**Note:** Ensure you update the `mesh_file` path variable inside the `if __name__ == "__main__":` block of these scripts before running.
-
-*   **View Boundary Nodes:**
-    ```bash
-    python scripts/visualize_boundary_nodes.py
-    ```
-
-*   **View Node Indices & Connections:**
-    ```bash
-    python scripts/visualize_first_10_nodes.py
-    ```
-
-## 📊 Output Formats
-
-The tool generates the following structured CSV files in your output directories:
-
-*   **nodes/:** `node_id, x, y, z, normal_x, normal_y, normal_z, mean_curvature, gaussian_curvature, degree, is_boundary...`
-*   **elements/:** `element_id, node_list, area, normal_vector...`
-*   **edges/:** `edge_id, node1, node2, length...`
-*   **mapping/:**
-    *   `edge_to_id.csv`
-    *   `element_neighbors.csv` (Adjacency list)
-    *   `element_edges.csv` (Edges belonging to elements)
-
-## 📝 License
-
-This project is part of the MeshCrafter software suite.
 ```
+output/
+  raw/ and refined/
+    nodes/<part>.csv        node_id, x, y, z, normals, mean/gaussian curvature, degree, is_boundary
+    edges/<part>.csv        edge_id, node1, node2, length
+    elements/<part>.csv     element_id, type, node list, normal, neighbours
+    mapping/                edge_to_id, edge_elements, element_edges, element_neighbors
+  summary/
+    raw_summary.json, refined_summary.json
+```
+
+## Project structure
+
+```
+main.py                     raw → refined pair pipeline
+utils/
+  ParserNas.py              NASTRAN parser (GRID, CTRIA3, CQUAD4, continuation lines, malformed exponents)
+  topology_extractor.py     edges, adjacency, element/edge maps
+  geometry_features.py      normals, boundary, curvature
+  canonical_order.py        spatial node sort + BFS element ordering
+  mesh_summary.py           bounding box, area, edge statistics
+  csv_utils.py              CSV / JSON export
+  config/Config.yaml        paths
+scripts/                    PyVista visualizations
+tests/                      analytic validation
+```
+
+## License
+
+Part of the MeshCrafter project.

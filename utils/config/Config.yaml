@@ -1,0 +1,8 @@
+# Paths are resolved relative to the directory you run main.py from.
+# Each raw .nas file in raw_input_dir must have a refined .nas file with the same name in rafined_input_dir.
+raw_input_dir: "data/raw"
+rafined_input_dir: "data/refined"
+raw_output_csv_dir: "output/raw"
+rafined_output_csv_dir: "output/refined"
+summary_dir: "output/summary"
+logs_dir: "logs"

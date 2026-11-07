@@ -303,212 +303,119 @@ class GeometryFeatures:
             self.boundary_nodes = set()
             return self.boundary_nodes
     
-    def calculate_mean_curvature(self, nodes: Dict[int, Tuple[float, float, float]], 
-                                  elements: Dict[int, Dict[str, Any]]) -> Dict[int, float]:
+    def _triangulate(self, nodes: Dict[int, Tuple[float, float, float]],
+                     elements: Dict[int, Dict[str, Any]]):
+        """Split every element into triangles (quads along the 0-2 diagonal).
+
+        Returns (node id list, coordinate array, triangle index array (T,3)).
         """
-        Mean curvature'ı hesapla (Discrete Differential Geometry - Optimized).
-        Mean curvature = (1/2) * |normal değişim| / mesafe
-        
-        Vectorized approach ile tüm node'lar aynı anda işlenir.
-        
-        Returns:
-            node_id -> mean curvature
-        """
-        self.logger.info("Mean curvature hesaplanıyor...")
-        
-        # Node komşuları hesapla
-        if not self.node_neighbors:
-            self.node_neighbors = self._calculate_node_neighbors(elements)
-        
-        # Node normal'lerini hesapla
-        if not self.node_normals:
-            self.calculate_node_normals(nodes, elements)
-        
-        self.mean_curvature = {}
-        
-        # Koordinatları numpy array'e çevir (vectorized işlem için)
         nid_list = list(nodes.keys())
         nid_to_idx = {nid: i for i, nid in enumerate(nid_list)}
-        coords_array = np.array([nodes[nid] for nid in nid_list], dtype=np.float64)
-        
-        # Normal'leri array'e çevir
-        normals_array = np.array([
-            self.node_normals.get(nid, np.array([0.0, 0.0, 1.0])) 
-            for nid in nid_list
-        ], dtype=np.float64)
-        
-        try:
-            # SciPy KDTree ile komşu bulma (opsiyonel, hız için)
-            from scipy.spatial import cKDTree
-            
-            for node_id in nodes.keys():
-                if node_id not in nid_to_idx:
-                    self.mean_curvature[node_id] = 0.0
-                    continue
-                
-                neighbors = self.node_neighbors.get(node_id, set())
-                
-                if len(neighbors) < 1:
-                    self.mean_curvature[node_id] = 0.0
-                    continue
-                
-                idx = nid_to_idx[node_id]
-                node_coord = coords_array[idx]
-                node_normal = normals_array[idx]
-                
-                # Komşuların indislerini al
-                neighbor_indices = np.array([nid_to_idx[n] for n in neighbors if n in nid_to_idx])
-                
-                if len(neighbor_indices) == 0:
-                    self.mean_curvature[node_id] = 0.0
-                    continue
-                
-                # Vectorized hesap
-                neighbor_coords = coords_array[neighbor_indices]
-                neighbor_normals = normals_array[neighbor_indices]
-                
-                edge_vecs = neighbor_coords - node_coord
-                edge_lengths = np.linalg.norm(edge_vecs, axis=1)
-                
-                # Sıfırdan farklı edge'ler
-                valid_edges = edge_lengths > 1e-10
-                
-                if not np.any(valid_edges):
-                    self.mean_curvature[node_id] = 0.0
-                    continue
-                
-                edge_lengths = edge_lengths[valid_edges]
-                neighbor_normals_valid = neighbor_normals[valid_edges]
-                
-                # Normal farklarını hesapla
-                normal_diffs = neighbor_normals_valid - node_normal
-                normal_diff_norms = np.linalg.norm(normal_diffs, axis=1)
-                
-                # Curvature'ı hesapla
-                curvatures = normal_diff_norms / edge_lengths
-                
-                # Weighted average
-                curvature_sum = np.sum(curvatures * edge_lengths)
-                weight_sum = np.sum(edge_lengths)
-                
-                self.mean_curvature[node_id] = (curvature_sum / weight_sum / 2.0) if weight_sum > 1e-10 else 0.0
-        
-        except (ImportError, Exception):
-            # Fallback: NumPy ile (daha yavaş ama güvenli)
-            for node_id in nodes.keys():
-                if node_id not in nid_to_idx:
-                    self.mean_curvature[node_id] = 0.0
-                    continue
-                
-                neighbors = self.node_neighbors.get(node_id, set())
-                
-                if len(neighbors) < 1:
-                    self.mean_curvature[node_id] = 0.0
-                    continue
-                
-                idx = nid_to_idx[node_id]
-                node_coord = coords_array[idx]
-                node_normal = normals_array[idx]
-                
-                curvature_sum = 0.0
-                weight_sum = 0.0
-                
-                for neighbor_id in neighbors:
-                    if neighbor_id not in nid_to_idx:
-                        continue
-                    
-                    neighbor_idx = nid_to_idx[neighbor_id]
-                    neighbor_coord = coords_array[neighbor_idx]
-                    neighbor_normal = normals_array[neighbor_idx]
-                    
-                    edge_vec = neighbor_coord - node_coord
-                    edge_length = np.linalg.norm(edge_vec)
-                    
-                    if edge_length > 1e-10:
-                        normal_diff = neighbor_normal - node_normal
-                        curvature = np.linalg.norm(normal_diff) / edge_length
-                        
-                        curvature_sum += curvature * edge_length
-                        weight_sum += edge_length
-                
-                self.mean_curvature[node_id] = (curvature_sum / weight_sum / 2.0) if weight_sum > 1e-10 else 0.0
-        
+        coords = np.array([nodes[nid] for nid in nid_list], dtype=np.float64)
+        tris = []
+        for elem in elements.values():
+            ids = [nid_to_idx[n] for n in elem.get("nodes", []) if n in nid_to_idx]
+            if len(ids) == 3:
+                tris.append(ids)
+            elif len(ids) == 4:
+                tris.append([ids[0], ids[1], ids[2]])
+                tris.append([ids[0], ids[2], ids[3]])
+        return nid_list, coords, np.array(tris, dtype=np.int64).reshape(-1, 3)
+
+    def _discrete_curvatures(self, nodes: Dict[int, Tuple[float, float, float]],
+                             elements: Dict[int, Dict[str, Any]]):
+        """Discrete mean and Gaussian curvature per node (Meyer et al. 2003).
+
+        - Gaussian: angle deficit (2*pi - sum of incident corner angles, pi on
+          boundary nodes) divided by the barycentric area (1/3 of incident triangle area).
+        - Mean: cotangent Laplace-Beltrami operator applied to positions,
+          H = -0.5 * <L(x), n>. Signed: positive where the surface curves away
+          from the node normal (convex for outward normals).
+        Validated on analytic shapes: sphere (H = 1/R, K = 1/R^2),
+        cylinder (H = 1/(2R), K = 0) and plane (H = K = 0).
+        """
+        nid_list, X, T = self._triangulate(nodes, elements)
+        n = len(nid_list)
+        H = np.zeros(n)
+        K = np.zeros(n)
+        if len(T) == 0:
+            return nid_list, H, K
+
+        a, b, c = X[T[:, 0]], X[T[:, 1]], X[T[:, 2]]
+        cross = np.cross(b - a, c - a)
+        area = 0.5 * np.linalg.norm(cross, axis=1)
+        valid = area > 1e-14
+        T, a, b, c, area = T[valid], a[valid], b[valid], c[valid], area[valid]
+
+        def corner(p, q, r):
+            # angle at p and its cotangent, for triangle (p, q, r)
+            u, v = q - p, r - p
+            cos_t = np.einsum("ij,ij->i", u, v)
+            sin_t = np.linalg.norm(np.cross(u, v), axis=1)
+            return np.arctan2(sin_t, cos_t), cos_t / np.maximum(sin_t, 1e-14)
+
+        ang0, cot0 = corner(a, b, c)
+        ang1, cot1 = corner(b, c, a)
+        ang2, cot2 = corner(c, a, b)
+
+        # Barycentric vertex areas and angle sums
+        A = np.zeros(n)
+        angle_sum = np.zeros(n)
+        for k, ang in enumerate((ang0, ang1, ang2)):
+            np.add.at(A, T[:, k], area / 3.0)
+            np.add.at(angle_sum, T[:, k], ang)
+
+        # Boundary nodes: endpoints of edges used by exactly one triangle
+        edges = np.sort(np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]]), axis=1)
+        uniq, counts = np.unique(edges, axis=0, return_counts=True)
+        boundary = np.zeros(n, dtype=bool)
+        boundary[uniq[counts == 1].ravel()] = True
+
+        has_area = A > 1e-14
+        full_angle = np.where(boundary, np.pi, 2.0 * np.pi)
+        K[has_area] = (full_angle[has_area] - angle_sum[has_area]) / A[has_area]
+
+        # Cotangent Laplacian: edge (i,j) opposite corner k gets weight cot(k)/2
+        L = np.zeros((n, 3))
+        for (i, j, cot) in ((1, 2, cot0), (2, 0, cot1), (0, 1, cot2)):
+            vi, vj = T[:, i], T[:, j]
+            d = (X[vj] - X[vi]) * (0.5 * cot)[:, None]
+            np.add.at(L, vi, d)
+            np.add.at(L, vj, -d)
+        L[has_area] /= A[has_area, None]
+
+        # Area-weighted vertex normals for the sign
+        N = np.zeros((n, 3))
+        unit = cross[valid] / np.maximum(np.linalg.norm(cross[valid], axis=1), 1e-14)[:, None]
+        for k in range(3):
+            np.add.at(N, T[:, k], unit * area[:, None])
+        N /= np.maximum(np.linalg.norm(N, axis=1), 1e-14)[:, None]
+
+        H = -0.5 * np.einsum("ij,ij->i", L, N)
+        H[boundary | ~has_area] = 0.0
+        K[~has_area] = 0.0
+        return nid_list, H, K
+
+    def calculate_mean_curvature(self, nodes: Dict[int, Tuple[float, float, float]],
+                                 elements: Dict[int, Dict[str, Any]]) -> Dict[int, float]:
+        """Signed discrete mean curvature per node (cotangent Laplacian). Boundary nodes get 0."""
+        self.logger.info("Mean curvature hesaplanıyor...")
+        nid_list, H, K = self._discrete_curvatures(nodes, elements)
+        self.mean_curvature = {nid: float(h) for nid, h in zip(nid_list, H)}
+        self.gaussian_curvature = {nid: float(k) for nid, k in zip(nid_list, K)}
         self.logger.info(f"Mean curvature hesaplandı ({len(self.mean_curvature)} node)")
         return self.mean_curvature
-    
-    def calculate_gaussian_curvature(self, nodes: Dict[int, Tuple[float, float, float]], 
+
+    def calculate_gaussian_curvature(self, nodes: Dict[int, Tuple[float, float, float]],
                                      elements: Dict[int, Dict[str, Any]]) -> Dict[int, float]:
-        """
-        Gaussian curvature'ı hesapla (Discrete Differential Geometry - Optimized).
-        Gaussian curvature = (2π - angle_sum) / area (angle deficit yöntemi)
-        
-        Vectorized approach ile neighbour açıları verimli hesaplanır.
-        
-        Returns:
-            node_id -> gaussian curvature
-        """
+        """Discrete Gaussian curvature per node (angle deficit / barycentric area)."""
         self.logger.info("Gaussian curvature hesaplanıyor...")
-        
-        # Node komşuları hesapla
-        if not self.node_neighbors:
-            self.node_neighbors = self._calculate_node_neighbors(elements)
-        
-        self.gaussian_curvature = {}
-        
-        # Koordinatları array'e çevir (vectorized işlem için)
-        nid_list = list(nodes.keys())
-        nid_to_idx = {nid: i for i, nid in enumerate(nid_list)}
-        coords_array = np.array([nodes[nid] for nid in nid_list], dtype=np.float64)
-        
-        for node_id in nodes.keys():
-            neighbors_set = self.node_neighbors.get(node_id, set())
-            neighbors = list(neighbors_set)
-            
-            if len(neighbors) < 2:
-                self.gaussian_curvature[node_id] = 0.0
-                continue
-            
-            if node_id not in nid_to_idx:
-                self.gaussian_curvature[node_id] = 0.0
-                continue
-            
-            idx = nid_to_idx[node_id]
-            node_coord = coords_array[idx]
-            
-            # Vectorized: neighbor koordinatlarını hazırla
-            neighbor_indices = np.array([nid_to_idx[n] for n in neighbors if n in nid_to_idx])
-            
-            if len(neighbor_indices) < 2:
-                self.gaussian_curvature[node_id] = 0.0
-                continue
-            
-            neighbor_coords = coords_array[neighbor_indices]
-            vectors = neighbor_coords - node_coord
-            
-            # Tüm neighbor çiftleri arasındaki açıları hesapla
-            angle_sum = 0.0
-            n_neighbors = len(neighbor_indices)
-            
-            for i in range(n_neighbors):
-                v1 = vectors[i]
-                v2 = vectors[(i + 1) % n_neighbors]
-                
-                norm_v1 = np.linalg.norm(v1)
-                norm_v2 = np.linalg.norm(v2)
-                
-                if norm_v1 > 1e-10 and norm_v2 > 1e-10:
-                    cos_angle = np.dot(v1, v2) / (norm_v1 * norm_v2)
-                    cos_angle = np.clip(cos_angle, -1.0, 1.0)
-                    angle = math.acos(cos_angle)
-                    angle_sum += angle
-            
-            # Gaussian curvature = angle deficit
-            angle_deficit = 2 * math.pi - angle_sum
-            self.gaussian_curvature[node_id] = angle_deficit
-        
+        if len(self.gaussian_curvature) != len(nodes):
+            nid_list, H, K = self._discrete_curvatures(nodes, elements)
+            self.gaussian_curvature = {nid: float(k) for nid, k in zip(nid_list, K)}
         self.logger.info(f"Gaussian curvature hesaplandı ({len(self.gaussian_curvature)} node)")
         return self.gaussian_curvature
-    
+
     def extract_geometry_features(self, nodes: Dict[int, Tuple[float, float, float]], 
                                   elements: Dict[int, Dict[str, Any]]) -> Dict[str, Any]:
         """

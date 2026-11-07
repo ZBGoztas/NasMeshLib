@@ -10,8 +10,8 @@ import pyvista as pv
 # Parent dizini sys.path'e ekle
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from utils.parser_utils import ParserNas
-from utils.order_normalize_mesh import serial_id
+from utils.ParserNas import ParserNas
+from utils.canonical_order import apply_canonical_order
 from utils.geometry_features import GeometryFeatures
 from utils.logger_utils import get_context_logger
 
@@ -38,7 +38,7 @@ def visualize_first_10_nodes(mesh_file: str):
         
         # Node ve element'leri sırala
         logger.info("Node ve element'ler sıralanıyor...")
-        ordered_data = serial_id(file_name, raw_data['nodes'], raw_data['elements'])
+        ordered_data = apply_canonical_order(nodes=raw_data['nodes'], elements=raw_data['elements'], file_name=file_name)
         
         nodes = ordered_data['nodes']
         elements = ordered_data['elements']
@@ -176,7 +176,9 @@ def visualize_first_10_nodes(mesh_file: str):
 
 
 if __name__ == "__main__":
-    # ← BURAYA DOSYA YOLUNU YAP İSTİR
-    mesh_file = "file_path"
+    if len(sys.argv) != 2:
+        print(f"Usage: python {Path(__file__).name} <mesh.nas>")
+        sys.exit(1)
+    mesh_file = sys.argv[1]
 
     visualize_first_10_nodes(mesh_file)

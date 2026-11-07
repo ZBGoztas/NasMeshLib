@@ -10,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pyvista as pv
 import numpy as np
-from utils.parser_utils import ParserNas
-from utils.order_normalize_mesh import serial_id
+from utils.ParserNas import ParserNas
+from utils.canonical_order import apply_canonical_order
 from utils.geometry_features import GeometryFeatures
 from utils.logger_utils import get_context_logger
 
@@ -38,7 +38,7 @@ class BoundaryNodeVisualizer:
             raw_data = parser.parse_file(self.file_path)
             
             self.logger.info("Node ve element'ler sıralanıyor...")
-            ordered_data = serial_id(self.file_name, raw_data['nodes'], raw_data['elements'])
+            ordered_data = apply_canonical_order(nodes=raw_data['nodes'], elements=raw_data['elements'], file_name=self.file_name)
             
             self.nodes = ordered_data['nodes']
             self.elements = ordered_data['elements']
@@ -217,7 +217,9 @@ def visualize_boundary_nodes(file_path: str, expected_degree: int = 6, show_edge
 
 
 if __name__ == "__main__":
-    # ← BURAYA DOSYA YOLUNU YAP İSTİR
-    mesh_file = "file_path"
+    if len(sys.argv) != 2:
+        print(f"Usage: python {Path(__file__).name} <mesh.nas>")
+        sys.exit(1)
+    mesh_file = sys.argv[1]
     
     visualize_boundary_nodes(mesh_file, expected_degree=6, show_edges=True)
